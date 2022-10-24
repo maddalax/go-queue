@@ -87,7 +87,7 @@ func (job Job[T]) Fail(error error) {
 //
 //	Updates the table to let the Queue know that the job is still being processed.
 //	The job should be updated every 30s. If 30s has gone by and the job has not been updated,
-//	we can assume it is dead and need to be re-run/**
+//	we can assume it is dead and need to be re-run
 func (job Job[T]) Ping() {
 	_, err := GetDatabase().NewUpdate().Model(&RawJob{}).Set("last_ping = ?", time.Now()).Where("id = ?", job.Id).Exec(context.Background())
 	if err != nil {

@@ -9,7 +9,7 @@ type PgNotify struct {
 	poller Poller
 }
 
-func CreatePgNotify(poller Poller) PgNotify {
+func createNotify(poller Poller) PgNotify {
 	return PgNotify{
 		poller: poller,
 	}

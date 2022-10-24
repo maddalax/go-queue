@@ -58,7 +58,6 @@ func (processor Processor[T]) rawToJob(raw RawJob) (Job[T], error) {
 }
 
 func (processor Processor[T]) doProcessJob(job Job[T], handlers []func(payload T) error) {
-	println("processing job: %s", job.Id)
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -91,7 +90,6 @@ func (processor Processor[T]) doProcessJob(job Job[T], handlers []func(payload T
 
 	job.Ping()
 	wg.Wait()
-	println("finished job: %s", job.Id)
 	cancel()
 	job.Complete()
 }

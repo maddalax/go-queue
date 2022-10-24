@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -19,11 +20,11 @@ type CreateOptions struct {
 }
 
 var poller = createPoller()
-var notify = CreatePgNotify(poller)
+var notify = createNotify(poller)
 
 func CreateWithOptions[T any](options CreateOptions) Queue[T] {
 	if options.Workers == 0 {
-		options.Workers = 150
+		options.Workers = 25
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -35,7 +36,7 @@ func CreateWithOptions[T any](options CreateOptions) Queue[T] {
 	}
 
 	queue := Queue[T]{
-		listenerChan: make(chan RawJob, 10000),
+		listenerChan: make(chan RawJob, options.Workers),
 		workers:      options.Workers,
 		processors:   processors,
 		context:      ctx,
@@ -90,7 +91,11 @@ func (queue Queue[T]) Enqueue(payload T) {
 }
 
 func Initialize() (Manager, error) {
+	if manager.started {
+		return manager, errors.New("initialize should only be called once")
+	}
 	startEnqueueListener()
+	startFailureDetector()
 	poller.start()
 	manager.Start()
 	return manager, notify.Start()

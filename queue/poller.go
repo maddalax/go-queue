@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
 	"os"
 	"time"
 )
@@ -16,7 +17,7 @@ import (
 const channelBuffer = 10000
 
 // The amount of jobs we would like to query at once.
-const prefetchLimit = 500
+const prefetchLimit = 250
 
 type PollerHandler struct {
 	event   string
@@ -38,7 +39,7 @@ func createPoller() Poller {
 		id:          fmt.Sprintf(hostname),
 		channel:     make(chan bool, channelBuffer),
 		handlers:    make(map[string]chan RawJob, 0),
-		handlerChan: make(chan PollerHandler, 1000),
+		handlerChan: make(chan PollerHandler, 10),
 	}
 }
 
@@ -187,8 +188,6 @@ func (poller Poller) sendNextJobs(count int, handlers map[string]chan RawJob) {
 			count = 0
 		}
 
-		println(fmt.Sprintf("querying for %d jobs to run.", count))
-
 		var jobs []RawJob
 
 		err = tx.NewRaw(`
@@ -199,10 +198,24 @@ func (poller Poller) sendNextJobs(count int, handlers map[string]chan RawJob) {
 		RETURNING subquery.*;
 		`, poller.id, diff).Scan(ctx, &jobs)
 
+		notSent := make([]string, 0)
 		for _, job := range jobs {
 			handler := handlers[job.Name]
-			if handler != nil {
-				handler <- job
+			select {
+			case handler <- job:
+				break
+			default:
+				// If the handlers (the workers) are backed up because they are processing too many jobs, set the jobs back
+				// to pending
+				notSent = append(notSent, job.Id)
+			}
+		}
+
+		if len(notSent) > 0 {
+			logger.Println(fmt.Sprintf("setting %d jobs back to pending because they were unable to send to processor", len(notSent)))
+			_, err := tx.NewUpdate().Model(&RawJob{}).Where("id = any(?)", pgdialect.Array(notSent)).Set("status = 'pending', locked_by = null").Exec(context.Background())
+			if err != nil {
+				return err
 			}
 		}
 
