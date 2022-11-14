@@ -2,17 +2,37 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/uptrace/bun/driver/pgdriver"
 )
 
-type PgNotify struct {
-	poller Poller
+type EventPayload struct {
+	Job    RawJob
+	Worker string
 }
 
-func createNotify(poller Poller) PgNotify {
+type NotifyHandler struct {
+	id      string
+	event   string
+	handler func(job RawJob)
+}
+
+type PgNotify struct {
+	handlers    map[string]func(job RawJob)
+	changeChan  chan string
+	handlerChan chan NotifyHandler
+}
+
+func createNotify() PgNotify {
 	return PgNotify{
-		poller: poller,
+		handlers:    make(map[string]func(job RawJob)),
+		changeChan:  make(chan string, 100),
+		handlerChan: make(chan NotifyHandler, 100),
 	}
+}
+
+func (n PgNotify) addHandler(handler NotifyHandler) {
+	n.handlerChan <- handler
 }
 
 func setup() error {
@@ -24,34 +44,35 @@ func setup() error {
 	query := `
 		BEGIN;
 
-			CREATE OR REPLACE FUNCTION job_change_function()
-				RETURNS TRIGGER AS
-			$$
-			BEGIN
-				IF NEW.status = 'pending' THEN
-					PERFORM pg_notify(concat('jobs:changed'), NEW.name);
-				END IF;
-				RETURN NULL;
-			END;
-			$$
-				LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION job_change_function()
+    RETURNS TRIGGER AS
+$$
+BEGIN
+    IF NEW.status = 'pending' THEN
+        PERFORM pg_notify(concat('jobs:changed'), json_build_object('job', NEW, 'worker',
+                                                                    (SELECT id from workers w WHERE w.name = NEW.name ORDER BY random() LIMIT 1))::text);
+    END IF;
+    RETURN NULL;
+END;
+$$
+    LANGUAGE plpgsql;
 
-			DROP TRIGGER IF EXISTS job_create_trigger ON jobs;
-			DROP TRIGGER IF EXISTS job_update_trigger ON jobs;
-			
-			CREATE TRIGGER job_update_trigger
-				AFTER UPDATE
-				ON jobs
-				FOR EACH ROW
-			EXECUTE PROCEDURE job_change_function();
-			
-			CREATE TRIGGER job_create_trigger
-				AFTER INSERT
-				ON jobs
-				FOR EACH ROW
-			EXECUTE PROCEDURE job_change_function();
+DROP TRIGGER IF EXISTS job_create_trigger ON jobs;
+DROP TRIGGER IF EXISTS job_update_trigger ON jobs;
 
-		COMMIT;
+CREATE TRIGGER job_update_trigger
+    AFTER UPDATE
+    ON jobs
+    FOR EACH ROW
+EXECUTE PROCEDURE job_change_function();
+
+CREATE TRIGGER job_create_trigger
+    AFTER INSERT
+    ON jobs
+    FOR EACH ROW
+EXECUTE PROCEDURE job_change_function();
+
+COMMIT;
 	`
 
 	_, err = GetDatabase().Exec(query)
@@ -68,17 +89,34 @@ func (n PgNotify) Start() error {
 	if err != nil {
 		return err
 	}
+
+	go func() {
+		for {
+			select {
+			case handler := <-n.handlerChan:
+				n.handlers[handler.id] = handler.handler
+				break
+			case message := <-n.changeChan:
+				payload := EventPayload{}
+				err := json.Unmarshal([]byte(message), &payload)
+				if err != nil {
+					logger.Fatal(err)
+				}
+				if worker, ok := n.handlers[payload.Worker]; ok {
+					// This may block if all the processors for this worker are full
+					worker(payload.Job)
+				}
+			}
+		}
+	}()
+
 	go func() {
 		ln := pgdriver.NewListener(GetDatabase())
 		if err := ln.Listen(context.Background(), "jobs:changed"); err != nil {
 			panic(err)
 		}
-		for range ln.Channel() {
-			if err != nil {
-				continue
-			}
-			// Let the poller know there is a new pending job
-			n.poller.channel <- true
+		for notif := range ln.Channel() {
+			n.changeChan <- notif.Payload
 		}
 	}()
 

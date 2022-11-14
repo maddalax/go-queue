@@ -7,14 +7,16 @@ import (
 	"time"
 )
 
-func createProcessor[T any](index int) Processor[T] {
+func createProcessor[T any](index int, queueId string) Processor[T] {
 	return Processor[T]{
+		queueId:     queueId,
 		handlerChan: make(chan func(T) error),
 		index:       index,
 	}
 }
 
 type Processor[T any] struct {
+	queueId     string
 	index       int
 	handlers    []func(T) error
 	handlerChan chan func(T) error
@@ -61,13 +63,15 @@ func (processor Processor[T]) doProcessJob(job Job[T], handlers []func(payload T
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 
+	job.Ping(processor.queueId)
+
 	go func(cancel context.Context) {
 		// Ping the job every 30s, so we can ensure it is still being processed
 		tick := time.NewTicker(time.Second * 30)
 		for {
 			select {
 			case _ = <-tick.C:
-				job.Ping()
+				job.Ping(processor.queueId)
 				tick.Reset(time.Second * 30)
 			case <-cancel.Done():
 				return
@@ -88,7 +92,8 @@ func (processor Processor[T]) doProcessJob(job Job[T], handlers []func(payload T
 		}()
 	}
 
-	job.Ping()
+	println("processing: " + job.Id)
+	job.Ping(processor.queueId)
 	wg.Wait()
 	cancel()
 	job.Complete()

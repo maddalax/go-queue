@@ -5,7 +5,6 @@ import (
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
-	"runtime"
 )
 
 var instance *bun.DB
@@ -15,11 +14,11 @@ func GetDatabase() *bun.DB {
 		return instance
 	}
 
-	dsn := "postgres://maddox:@localhost:5432/maddox?sslmode=disable"
+	dsn := "postgres://maddox:@localhost:5432/maddox?sslmode=disable&application_name=JobQueue"
 	// dsn := "unix://user:pass@dbname/var/run/postgresql/.s.PGSQL.5432"
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 
-	maxOpenConns := 4 * runtime.GOMAXPROCS(0)
+	maxOpenConns := 1
 	sqldb.SetMaxOpenConns(maxOpenConns)
 	sqldb.SetMaxIdleConns(maxOpenConns)
 
